@@ -1,5 +1,5 @@
 //-----------------------------------------------------------------------------
-// Copyright (c) 2013-2017 Benjamin Buch
+// Copyright (c) 2013-2018 Benjamin Buch
 //
 // https://github.com/bebuch/tar
 //
