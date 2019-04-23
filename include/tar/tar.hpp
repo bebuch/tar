@@ -191,7 +191,7 @@ namespace tar{
 
 			if(name.size() >= 100){
 				throw std::runtime_error(
-					"Tar: filename larger than 99 charakters"
+					"Tar: filename larger than 99 characters"
 				);
 			}
 
