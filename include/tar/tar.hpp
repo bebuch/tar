@@ -345,9 +345,10 @@ namespace tar{
 
 		// state of current file
 		std::ifstream is_;
+		std::string filename_;
 		std::size_t end_record_bytes_{0};
-		std::size_t expected_file_size{0};
-		std::size_t actual_file_size{0};
+		std::size_t expected_file_size_{0};
+		std::size_t actual_file_size_{0};
 
 		// Not owning reference to parent stream, used for propagating errors
 		std::istream &upper_;
@@ -385,12 +386,26 @@ namespace tar{
 
 					is_.read(buffer_.data(), buffer_.size());
 					size_t size = is_.gcount();
-					actual_file_size += size;
+					actual_file_size_ += size;
+
+					if (actual_file_size_ > expected_file_size_){
+						// truncate to expected size
+						size_t diff = actual_file_size_ - expected_file_size_;
+						assert(diff < size);
+						size -= diff;
+						actual_file_size_ = expected_file_size_;
+						// TODO: use proper logging
+						std::cerr << "Tar: File size increased during read, truncate to "
+								  << expected_file_size_ << ": " << filename_ << std::endl;
+						is_.setstate(std::ios_base::eofbit); // mark as eof
+					}
+
 					if (is_.eof()) {
-						if (actual_file_size != expected_file_size){
+						if (actual_file_size_ != expected_file_size_){
 							throw std::runtime_error(
-								"Tar: Read file size " + std::to_string(actual_file_size) +
-								" is different than expected " + std::to_string(expected_file_size)
+								"Tar: Read file size " + std::to_string(actual_file_size_) + " " +
+								"is different than expected " + std::to_string(expected_file_size_) + ": " +
+								filename_
 							);
 						}
 					} else if (is_.fail()) {
@@ -411,14 +426,14 @@ namespace tar{
 			// take next file
 			auto fit = files_.begin();
 			assert(fit != files_.end());
-			std::string filename = *fit;
+			filename_ = *fit;
 			files_.erase(fit); // remove this file from the set
 
-			expected_file_size = boost::filesystem::file_size(filename);
-			is_ = std::ifstream(filename, std::ios_base::in | std::iostream::binary);
-			actual_file_size = 0;
-			end_record_bytes_ = (512 - (expected_file_size % 512)) % 512;
-			auto const header = impl::tar::make_posix_header(filename, expected_file_size);
+			is_ = std::ifstream(filename_, std::ios_base::in | std::iostream::binary);
+			expected_file_size_ = boost::filesystem::file_size(filename_);
+			actual_file_size_ = 0;
+			end_record_bytes_ = (512 - (expected_file_size_ % 512)) % 512;
+			auto const header = impl::tar::make_posix_header(filename_, expected_file_size_);
 			assert(buffer_.size() >= header.size());
 			std::copy(header.data(), header.data() + header.size(), buffer_.data());
 
