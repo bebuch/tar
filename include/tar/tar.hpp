@@ -26,7 +26,9 @@
 #include <tuple>
 #include <map>
 #include <set>
-
+#include <array>
+#include <cassert>
+#include <boost/filesystem.hpp>
 
 namespace tar{
 
@@ -330,6 +332,112 @@ namespace tar{
 
 		/// \brief No filename duplicates
 		std::set< std::string > filenames_;
+	};
+
+	template<std::size_t BufferSize>
+	class tar_buff: public std::streambuf {
+
+		// remaining files
+		std::set< std::string > files_;
+
+		static_assert(BufferSize > 512);
+		std::array< char, BufferSize > buffer_;
+
+		// state of current file
+		std::ifstream is_;
+		std::size_t end_record_bytes_{0};
+		std::size_t expected_file_size{0};
+		std::size_t actual_file_size{0};
+
+		// Not owning reference to parent stream, used for propagating errors
+		std::istream &upper_;
+
+	public:
+		tar_buff(const std::set< std::string > &files, std::istream &upper)
+			: files_{files}, upper_{upper}
+		{
+			assert(!files_.empty());
+			next_file();
+		}
+
+		~tar_buff()
+		{ }
+
+	public:
+		int underflow() {
+			if (this->gptr() == this->egptr()) {
+				if (is_.eof()){ // end of current file
+					if (end_record_bytes_ > 0) { // record padding
+						assert(end_record_bytes_ <= buffer_.size());
+						std::fill(buffer_.data(), buffer_.data()+end_record_bytes_, 0);
+						this->setg(this->buffer_.data(), this->buffer_.data(), this->buffer_.data() + end_record_bytes_);
+						end_record_bytes_ = 0;
+					} else if (files_.empty()) { // tar eof
+						upper_.setstate(std::istream::eofbit);
+					} else { // next file
+						next_file();
+					}
+				} else { // continue with current file
+					if (is_.fail()) {
+						upper_.setstate(is_.rdstate());
+						return std::char_traits<char>::eof();
+					}
+
+					is_.read(buffer_.data(), buffer_.size());
+					size_t size = is_.gcount();
+					actual_file_size += size;
+					if (is_.eof()) {
+						if (actual_file_size != expected_file_size){
+							throw std::runtime_error(
+								"Tar: Read file size " + std::to_string(actual_file_size) +
+								" is different than expected " + std::to_string(expected_file_size)
+							);
+						}
+					} else if (is_.fail()) {
+						upper_.setstate(is_.rdstate());
+						return std::char_traits<char>::eof();
+					}
+
+					this->setg(this->buffer_.data(), this->buffer_.data(), this->buffer_.data() + size);
+				}
+			}
+			return this->gptr() == this->egptr()
+				   ? std::char_traits<char>::eof()
+				   : std::char_traits<char>::to_int_type(*this->gptr());
+		}
+
+	private:
+		void next_file() {
+			// take next file
+			auto fit = files_.begin();
+			assert(fit != files_.end());
+			std::string filename = *fit;
+			files_.erase(fit); // remove this file from the set
+
+			expected_file_size = boost::filesystem::file_size(filename);
+			is_ = std::ifstream(filename, std::ios_base::in | std::iostream::binary);
+			actual_file_size = 0;
+			end_record_bytes_ = (512 - (expected_file_size % 512)) % 512;
+			auto const header = impl::tar::make_posix_header(filename, expected_file_size);
+			assert(buffer_.size() >= header.size());
+			std::copy(header.data(), header.data() + header.size(), buffer_.data());
+
+			this->setg(this->buffer_.data(), this->buffer_.data(), this->buffer_.data() + header.size());
+		}
+	};
+
+	/// \brief Create a simple tar file as istream
+	template<std::size_t BufferSize>
+	class tar_stream: public std::istream {
+	public:
+		tar_stream(const std::set< std::string > &files):
+			buf_(files, *this)
+		{
+			init(&buf_);
+		}
+
+	private:
+		tar_buff<BufferSize> buf_;
 	};
 
 
