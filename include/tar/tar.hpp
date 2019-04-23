@@ -28,7 +28,6 @@
 #include <set>
 #include <array>
 #include <cassert>
-#include <boost/filesystem.hpp>
 
 namespace tar{
 
@@ -334,7 +333,7 @@ namespace tar{
 		std::set< std::string > filenames_;
 	};
 
-	template<std::size_t BufferSize>
+	template< typename Logger, typename Fs, std::size_t BufferSize >
 	class tar_buff: public std::streambuf {
 
 		// remaining files
@@ -380,6 +379,7 @@ namespace tar{
 					}
 				} else { // continue with current file
 					if (is_.fail()) {
+						Logger::error("Error while reading underlying file", filename_);
 						upper_.setstate(is_.rdstate());
 						return std::char_traits<char>::eof();
 					}
@@ -394,13 +394,12 @@ namespace tar{
 						assert(diff < size);
 						size -= diff;
 						actual_file_size_ = expected_file_size_;
-						// TODO: use proper logging
-						std::cerr << "Tar: File size increased during read, truncate to "
-								  << expected_file_size_ << ": " << filename_ << std::endl;
+						Logger::warning("File size increased during read, truncate to " + std::to_string(expected_file_size_), filename_);
 						is_.setstate(std::ios_base::eofbit); // mark as eof
 					}
 
 					if (is_.eof()) {
+						Logger::trace("Read " + std::to_string(actual_file_size_) + " bytes", filename_);
 						if (actual_file_size_ != expected_file_size_){
 							throw std::runtime_error(
 								"Tar: Read file size " + std::to_string(actual_file_size_) + " " +
@@ -409,6 +408,7 @@ namespace tar{
 							);
 						}
 					} else if (is_.fail()) {
+						Logger::error("Error while reading underlying file", filename_);
 						upper_.setstate(is_.rdstate());
 						return std::char_traits<char>::eof();
 					}
@@ -430,7 +430,8 @@ namespace tar{
 			files_.erase(fit); // remove this file from the set
 
 			is_ = std::ifstream(filename_, std::ios_base::in | std::iostream::binary);
-			expected_file_size_ = boost::filesystem::file_size(filename_);
+			expected_file_size_ = Fs::file_size(filename_);
+			Logger::trace("Processing", filename_);
 			actual_file_size_ = 0;
 			end_record_bytes_ = (512 - (expected_file_size_ % 512)) % 512;
 			auto const header = impl::tar::make_posix_header(filename_, expected_file_size_);
@@ -442,7 +443,7 @@ namespace tar{
 	};
 
 	/// \brief Create a simple tar file as istream
-	template<std::size_t BufferSize>
+	template< typename Logger, typename Fs, std::size_t BufferSize = 65536 >
 	class tar_stream: public std::istream {
 	public:
 		tar_stream(const std::set< std::string > &files):
@@ -452,7 +453,7 @@ namespace tar{
 		}
 
 	private:
-		tar_buff<BufferSize> buf_;
+		tar_buff< Logger, Fs, BufferSize > buf_;
 	};
 
 
