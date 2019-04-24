@@ -365,7 +365,7 @@ namespace tar{
 
 	public:
 		int underflow() {
-			if (this->gptr() == this->egptr()) {
+			while (this->gptr() == this->egptr()) {
 				if (is_.eof()){ // end of current file
 					if (end_record_bytes_ > 0) { // record padding
 						assert(end_record_bytes_ <= buffer_.size());
@@ -374,6 +374,7 @@ namespace tar{
 						end_record_bytes_ = 0;
 					} else if (files_.empty()) { // tar eof
 						upper_.setstate(std::istream::eofbit);
+						return std::char_traits<char>::eof();
 					} else { // next file
 						next_file();
 					}
@@ -416,9 +417,8 @@ namespace tar{
 					this->setg(this->buffer_.data(), this->buffer_.data(), this->buffer_.data() + size);
 				}
 			}
-			return this->gptr() == this->egptr()
-				   ? std::char_traits<char>::eof()
-				   : std::char_traits<char>::to_int_type(*this->gptr());
+			assert(this->gptr() != this->egptr());
+			return std::char_traits<char>::to_int_type(*this->gptr());
 		}
 
 	private:
