@@ -345,7 +345,7 @@ namespace tar{
 		// state of current file
 		std::ifstream is_;
 		std::string filename_;
-		std::size_t end_record_bytes_{0};
+		std::size_t padding_bytes_{0};
 		std::size_t expected_file_size_{0};
 		std::size_t actual_file_size_{0};
 
@@ -367,11 +367,8 @@ namespace tar{
 		int underflow() {
 			while (this->gptr() == this->egptr()) {
 				if (is_.eof()){ // end of current file
-					if (end_record_bytes_ > 0) { // record padding
-						assert(end_record_bytes_ <= buffer_.size());
-						std::fill(buffer_.data(), buffer_.data()+end_record_bytes_, 0);
-						this->setg(this->buffer_.data(), this->buffer_.data(), this->buffer_.data() + end_record_bytes_);
-						end_record_bytes_ = 0;
+					if (padding_bytes_ > 0) { // record padding
+						record_padding();
 					} else if (files_.empty()) { // tar eof
 						upper_.setstate(std::istream::eofbit);
 						return std::char_traits<char>::eof();
@@ -379,42 +376,11 @@ namespace tar{
 						next_file();
 					}
 				} else { // continue with current file
-					if (is_.fail()) {
+					if (!process_file()){
 						Logger::error("Error while reading underlying file", filename_);
 						upper_.setstate(is_.rdstate());
 						return std::char_traits<char>::eof();
 					}
-
-					is_.read(buffer_.data(), buffer_.size());
-					size_t size = is_.gcount();
-					actual_file_size_ += size;
-
-					if (actual_file_size_ > expected_file_size_){
-						// truncate to expected size
-						size_t diff = actual_file_size_ - expected_file_size_;
-						assert(diff < size);
-						size -= diff;
-						actual_file_size_ = expected_file_size_;
-						Logger::warning("File size increased during read, truncate to " + std::to_string(expected_file_size_), filename_);
-						is_.setstate(std::ios_base::eofbit); // mark as eof
-					}
-
-					if (is_.eof()) {
-						Logger::trace("Read " + std::to_string(actual_file_size_) + " bytes", filename_);
-						if (actual_file_size_ != expected_file_size_){
-							throw std::runtime_error(
-								"Tar: Read file size " + std::to_string(actual_file_size_) + " " +
-								"is different than expected " + std::to_string(expected_file_size_) + ": " +
-								filename_
-							);
-						}
-					} else if (is_.fail()) {
-						Logger::error("Error while reading underlying file", filename_);
-						upper_.setstate(is_.rdstate());
-						return std::char_traits<char>::eof();
-					}
-
-					this->setg(this->buffer_.data(), this->buffer_.data(), this->buffer_.data() + size);
 				}
 			}
 			assert(this->gptr() != this->egptr());
@@ -422,6 +388,49 @@ namespace tar{
 		}
 
 	private:
+		bool process_file(){
+			if (is_.fail()) {
+				return false;
+			}
+
+			is_.read(buffer_.data(), buffer_.size());
+			size_t size = is_.gcount();
+			actual_file_size_ += size;
+
+			if (actual_file_size_ > expected_file_size_){
+				// truncate to expected size
+				size_t diff = actual_file_size_ - expected_file_size_;
+				assert(diff < size);
+				size -= diff;
+				actual_file_size_ = expected_file_size_;
+				Logger::warning("File size increased during read, truncate to " + std::to_string(expected_file_size_), filename_);
+				is_.setstate(std::ios_base::eofbit); // mark as eof
+			}
+
+			if (is_.eof()) {
+				Logger::trace("Read " + std::to_string(actual_file_size_) + " bytes", filename_);
+				if (actual_file_size_ != expected_file_size_){
+					throw std::runtime_error(
+						"Tar: Read file size " + std::to_string(actual_file_size_) + " " +
+						"is different than expected " + std::to_string(expected_file_size_) + ": " +
+						filename_
+					);
+				}
+			} else if (is_.fail()) {
+				return false;
+			}
+
+			this->setg(this->buffer_.data(), this->buffer_.data(), this->buffer_.data() + size);
+			return true;
+		}
+
+		void record_padding(){
+			assert(padding_bytes_ <= buffer_.size());
+			std::fill(buffer_.data(), buffer_.data()+padding_bytes_, 0);
+			this->setg(this->buffer_.data(), this->buffer_.data(), this->buffer_.data() + padding_bytes_);
+			padding_bytes_ = 0;
+		}
+
 		void next_file() {
 			// take next file
 			auto fit = files_.begin();
@@ -433,7 +442,7 @@ namespace tar{
 			expected_file_size_ = Fs::file_size(filename_);
 			Logger::trace("Processing", filename_);
 			actual_file_size_ = 0;
-			end_record_bytes_ = (512 - (expected_file_size_ % 512)) % 512;
+			padding_bytes_ = (512 - (expected_file_size_ % 512)) % 512;
 			auto const header = impl::tar::make_posix_header(filename_, expected_file_size_);
 			assert(buffer_.size() >= header.size());
 			std::copy(header.data(), header.data() + header.size(), buffer_.data());
