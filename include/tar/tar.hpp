@@ -389,7 +389,11 @@ namespace tar{
 
 	private:
 		bool process_file(){
-			if (is_.fail()) {
+			if (is_.bad()) {
+				Logger::error("I/O error", filename_);
+				return false;
+			} else if (is_.fail()) {
+				Logger::error("Stream error", filename_);
 				return false;
 			}
 
@@ -410,13 +414,16 @@ namespace tar{
 			if (is_.eof()) {
 				Logger::trace("Read " + std::to_string(actual_file_size_) + " bytes", filename_);
 				if (actual_file_size_ != expected_file_size_){
-					throw std::runtime_error(
-						"Tar: Read file size " + std::to_string(actual_file_size_) + " " +
-						"is different than expected " + std::to_string(expected_file_size_) + ": " +
-						filename_
-					);
+					Logger::error("Read file size " + std::to_string(actual_file_size_) + " " +
+								  "is different than expected " + std::to_string(expected_file_size_), filename_);
+					is_.setstate(std::ios_base::failbit); // logical error
+					return false;
 				}
+			} else if (is_.bad()) {
+				Logger::error("I/O error", filename_);
+				return false;
 			} else if (is_.fail()) {
+				Logger::error("Stream error", filename_);
 				return false;
 			}
 
