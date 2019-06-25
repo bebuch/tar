@@ -346,7 +346,9 @@ namespace tar{
 		std::ifstream is_;
 		std::string filename_;
 		std::size_t padding_bytes_{0};
+		// expected size of the file written to the tar header
 		std::size_t expected_file_size_{0};
+		// how many bytes we already read from input
 		std::size_t actual_file_size_{0};
 
 		// Not owning reference to parent stream, used for propagating errors
@@ -389,6 +391,7 @@ namespace tar{
 
 	private:
 		bool process_file(){
+			assert(actual_file_size_ <= expected_file_size_);
 			if (is_.bad()) {
 				Logger::error("I/O error", filename_);
 				return false;
@@ -404,7 +407,7 @@ namespace tar{
 			if (actual_file_size_ > expected_file_size_){
 				// truncate to expected size
 				size_t diff = actual_file_size_ - expected_file_size_;
-				assert(diff < size);
+				assert(diff <= size);
 				size -= diff;
 				actual_file_size_ = expected_file_size_;
 				Logger::warning("File size increased during read, truncate to " + std::to_string(expected_file_size_), filename_);
