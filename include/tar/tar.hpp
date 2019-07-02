@@ -26,7 +26,8 @@
 #include <tuple>
 #include <map>
 #include <set>
-
+#include <array>
+#include <cassert>
 
 namespace tar{
 
@@ -191,7 +192,7 @@ namespace tar{
 
 			if(name.size() >= 100){
 				throw std::runtime_error(
-					"Tar: filename larger than 99 charakters"
+					"Tar: filename larger than 99 characters"
 				);
 			}
 
@@ -330,6 +331,155 @@ namespace tar{
 
 		/// \brief No filename duplicates
 		std::set< std::string > filenames_;
+	};
+
+	template< typename Logger, typename Fs, std::size_t BufferSize >
+	class tar_buff: public std::streambuf {
+
+		// remaining files
+		std::set< std::string > files_;
+
+		static_assert(BufferSize > 512);
+		std::array< char, BufferSize > buffer_;
+
+		// state of current file
+		std::ifstream is_;
+		std::string filename_;
+		std::size_t padding_bytes_{0};
+		// expected size of the file written to the tar header
+		std::size_t expected_file_size_{0};
+		// how many bytes we already read from input
+		std::size_t actual_file_size_{0};
+
+		// Not owning reference to parent stream, used for propagating errors
+		std::istream &upper_;
+
+	public:
+		tar_buff(const std::set< std::string > &files, std::istream &upper)
+			: files_{files}, upper_{upper}
+		{
+			assert(!files_.empty());
+			next_file();
+		}
+
+		~tar_buff()
+		{ }
+
+	public:
+		int underflow() {
+			while (this->gptr() == this->egptr()) {
+				if (is_.eof()){ // end of current file
+					if (padding_bytes_ > 0) { // record padding
+						record_padding();
+					} else if (files_.empty()) { // tar eof
+						upper_.setstate(std::istream::eofbit);
+						return std::char_traits<char>::eof();
+					} else { // next file
+						next_file();
+					}
+				} else { // continue with current file
+					if (!process_file()){
+						Logger::error("Error while reading underlying file", filename_);
+						upper_.setstate(is_.rdstate());
+						return std::char_traits<char>::eof();
+					}
+				}
+			}
+			assert(this->gptr() != this->egptr());
+			return std::char_traits<char>::to_int_type(*this->gptr());
+		}
+
+	private:
+		bool process_file(){
+			assert(actual_file_size_ <= expected_file_size_);
+			if (is_.bad()) {
+				Logger::error("I/O error", filename_);
+				return false;
+			} else if (is_.fail()) {
+				Logger::error("Stream error", filename_);
+				return false;
+			}
+
+			is_.read(buffer_.data(), buffer_.size());
+			size_t size = is_.gcount();
+			actual_file_size_ += size;
+
+			if (actual_file_size_ > expected_file_size_){
+				// truncate to expected size
+				size_t diff = actual_file_size_ - expected_file_size_;
+				assert(diff <= size);
+				size -= diff;
+				actual_file_size_ = expected_file_size_;
+				Logger::warning("File size increased during read, truncate to " + std::to_string(expected_file_size_), filename_);
+				is_.setstate(std::ios_base::eofbit); // mark as eof
+			}
+
+			if (is_.eof()) {
+				Logger::trace("Read " + std::to_string(actual_file_size_) + " bytes", filename_);
+				if (actual_file_size_ != expected_file_size_){
+					Logger::error("Read file size " + std::to_string(actual_file_size_) + " " +
+								  "is different than expected " + std::to_string(expected_file_size_), filename_);
+					is_.setstate(std::ios_base::failbit); // logical error
+					return false;
+				}
+			} else if (is_.bad()) {
+				Logger::error("I/O error", filename_);
+				return false;
+			} else if (is_.fail()) {
+				Logger::error("Stream error", filename_);
+				return false;
+			}
+
+			this->setg(this->buffer_.data(), this->buffer_.data(), this->buffer_.data() + size);
+			return true;
+		}
+
+		void record_padding(){
+			assert(padding_bytes_ <= buffer_.size());
+			std::fill(buffer_.data(), buffer_.data()+padding_bytes_, 0);
+			this->setg(this->buffer_.data(), this->buffer_.data(), this->buffer_.data() + padding_bytes_);
+			padding_bytes_ = 0;
+		}
+
+		void next_file() {
+			// take next file
+			auto fit = files_.begin();
+			assert(fit != files_.end());
+			filename_ = *fit;
+			files_.erase(fit); // remove this file from the set
+
+			Logger::trace("Processing", filename_);
+			is_ = std::ifstream(filename_, std::ios_base::in | std::iostream::binary);
+			std::optional<uintmax_t> size_opt = Fs::file_size(filename_);
+			if (size_opt){
+				expected_file_size_ = *size_opt;
+			} else{
+				Logger::error("Error getting file size", filename_);
+				is_.setstate(std::ios_base::failbit); // logical error, process_file will check it later
+				expected_file_size_ = 0;
+			}
+			actual_file_size_ = 0;
+			padding_bytes_ = (512 - (expected_file_size_ % 512)) % 512;
+			auto const header = impl::tar::make_posix_header(filename_, expected_file_size_);
+			assert(buffer_.size() >= header.size());
+			std::copy(header.data(), header.data() + header.size(), buffer_.data());
+
+			this->setg(this->buffer_.data(), this->buffer_.data(), this->buffer_.data() + header.size());
+		}
+	};
+
+	/// \brief Create a simple tar file as istream
+	template< typename Logger, typename Fs, std::size_t BufferSize = 65536 >
+	class tar_stream: public std::istream {
+	public:
+		tar_stream(const std::set< std::string > &files):
+			buf_(files, *this)
+		{
+			init(&buf_);
+		}
+
+	private:
+		tar_buff< Logger, Fs, BufferSize > buf_;
 	};
 
 
