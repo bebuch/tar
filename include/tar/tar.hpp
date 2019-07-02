@@ -448,9 +448,16 @@ namespace tar{
 			filename_ = *fit;
 			files_.erase(fit); // remove this file from the set
 
-			is_ = std::ifstream(filename_, std::ios_base::in | std::iostream::binary);
-			expected_file_size_ = Fs::file_size(filename_);
 			Logger::trace("Processing", filename_);
+			is_ = std::ifstream(filename_, std::ios_base::in | std::iostream::binary);
+			std::optional<uintmax_t> size_opt = Fs::file_size(filename_);
+			if (size_opt){
+				expected_file_size_ = *size_opt;
+			} else{
+				Logger::error("Error getting file size", filename_);
+				is_.setstate(std::ios_base::failbit); // logical error, process_file will check it later
+				expected_file_size_ = 0;
+			}
 			actual_file_size_ = 0;
 			padding_bytes_ = (512 - (expected_file_size_ % 512)) % 512;
 			auto const header = impl::tar::make_posix_header(filename_, expected_file_size_);
