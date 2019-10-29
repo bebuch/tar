@@ -472,7 +472,7 @@ namespace tar{
 	template< typename Logger, typename Fs, std::size_t BufferSize = 65536 >
 	class tar_stream: public std::istream {
 	public:
-		tar_stream(const std::set< std::string > &files):
+		explicit tar_stream(const std::set< std::string > &files):
 			buf_(files, *this)
 		{
 			init(&buf_);
