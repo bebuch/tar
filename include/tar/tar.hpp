@@ -333,14 +333,26 @@ namespace tar{
 		std::set< std::string > filenames_;
 	};
 
-	template< typename Logger, typename Fs, std::size_t BufferSize >
+	namespace flag {
+		using type = uint8_t;
+
+		/// truncate file to its expected size when its size grow during reading
+		/// fail othervise
+		constexpr type truncate_growing = (1 << 0);
+
+		/// trim missing files to zero in tar
+		/// fail othervise
+		constexpr type trim_missing = (1 << 1);
+	}
+
+	template< typename Logger, typename Fs, std::size_t buffer_size, flag::type tar_flags >
 	class tar_buff: public std::streambuf {
 
 		// remaining files
 		std::set< std::string > files_;
 
-		static_assert(BufferSize > 512);
-		std::array< char, BufferSize > buffer_;
+		static_assert(buffer_size >= 512, "Buffer have to be big enough for tar header");
+		std::array< char, buffer_size > buffer_;
 
 		// state of current file
 		std::ifstream is_;
@@ -405,13 +417,22 @@ namespace tar{
 			actual_file_size_ += size;
 
 			if (actual_file_size_ > expected_file_size_){
-				// truncate to expected size
-				size_t diff = actual_file_size_ - expected_file_size_;
-				assert(diff <= size);
-				size -= diff;
-				actual_file_size_ = expected_file_size_;
-				Logger::warning("File size increased during read, truncate to " + std::to_string(expected_file_size_), filename_);
-				is_.setstate(std::ios_base::eofbit); // mark as eof
+				if ((tar_flags & flag::truncate_growing) != 0) {
+					// truncate to expected size
+					size_t diff = actual_file_size_ - expected_file_size_;
+					assert(diff <= size);
+					size -= diff;
+					actual_file_size_ = expected_file_size_;
+					Logger::warning(
+						"File size increased during read, truncate to " + std::to_string(expected_file_size_),
+						filename_);
+					is_.setstate(std::ios_base::eofbit); // mark as eof
+				} else {
+					Logger::error(
+						"File size increased during read, expected " + std::to_string(expected_file_size_),
+						filename_);
+					return false;
+				}
 			}
 
 			if (is_.eof()) {
@@ -454,9 +475,16 @@ namespace tar{
 			if (size_opt){
 				expected_file_size_ = *size_opt;
 			} else{
-				Logger::error("Error getting file size", filename_);
-				is_.setstate(std::ios_base::failbit); // logical error, process_file will check it later
-				expected_file_size_ = 0;
+				if ((tar_flags & flag::trim_missing) != 0) {
+					Logger::warning("Error getting file size, trim", filename_);
+					expected_file_size_ = 0;
+					// recover file stream state, mark as end
+					is_.setstate(std::ios_base::eofbit);
+				} else {
+					Logger::error("Error getting file size", filename_);
+					is_.setstate(std::ios_base::failbit); // logical error, process_file will check it later
+					expected_file_size_ = 0;
+				}
 			}
 			actual_file_size_ = 0;
 			padding_bytes_ = (512 - (expected_file_size_ % 512)) % 512;
@@ -469,7 +497,7 @@ namespace tar{
 	};
 
 	/// \brief Create a simple tar file as istream
-	template< typename Logger, typename Fs, std::size_t BufferSize = 65536 >
+	template< typename Logger, typename Fs, std::size_t buffer_size = 65536 , flag::type tar_flags = flag::truncate_growing >
 	class tar_stream: public std::istream {
 	public:
 		explicit tar_stream(const std::set< std::string > &files):
@@ -479,7 +507,7 @@ namespace tar{
 		}
 
 	private:
-		tar_buff< Logger, Fs, BufferSize > buf_;
+		tar_buff< Logger, Fs, buffer_size, tar_flags > buf_;
 	};
 
 
