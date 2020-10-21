@@ -169,19 +169,21 @@ namespace tar{
 		}
 
 		inline std::array< char, 512 > make_posix_header(
-			std::string const& name,
-			std::size_t size
+			const std::string& name,
+			std::size_t size,
+			const std::chrono::system_clock::time_point& mtime
 		){
+			using namespace std::chrono;
 			std::array< char, 512 > buffer{};
 
 			std::ostringstream os;
 			os << std::oct << std::setfill('0') << std::setw(11)
-				<< std::time(nullptr);
-			std::string mtime = os.str();
+				<< duration_cast<seconds>(mtime.time_since_epoch()).count();
+			std::string mtimeStr = os.str();
 
 			write< field_name::magic >(buffer, magic);
 			write< field_name::mode >(buffer, mode);
-			write< field_name::mtime >(buffer, mtime);
+			write< field_name::mtime >(buffer, mtimeStr);
 			write< field_name::typeflag >(buffer, typeflag);
 
 
@@ -266,32 +268,37 @@ namespace tar{
 		}
 
 		void write(
-			std::string const& filename,
+			const std::string& filename,
 			char const* content,
-			std::size_t size
+			std::size_t size,
+			const std::chrono::system_clock::time_point& mtime
 		){
 			write(filename, [&](std::ostream& os){
 				os.write(content, size);
-			}, size);
+			}, size, mtime);
 		}
 
-		void write(std::string const& filename, std::string const& content){
-			write(filename, content.data(), content.size());
+		void write(const std::string& filename,
+			       const std::string& content,
+			       const std::chrono::system_clock::time_point& mtime){
+			write(filename, content.data(), content.size(), mtime);
 		}
 
 		void write(
-			std::string const& filename,
-			std::function< void(std::ostream&) > const& writer
+			const std::string& filename,
+			const std::function< void(std::ostream&) >& writer,
+			const std::chrono::system_clock::time_point& mtime
 		){
 			std::ostringstream os(std::ios_base::out | std::ios_base::binary);
 			writer(os);
-			write(filename, os.str());
+			write(filename, os.str(), mtime);
 		}
 
 		void write(
-			std::string const& filename,
+			const std::string& filename,
 			std::function< void(std::ostream&) > const& writer,
-			std::size_t size
+			std::size_t size,
+			const std::chrono::system_clock::time_point& mtime
 		){
 			if(!filenames_.emplace(filename).second){
 				throw std::runtime_error(
@@ -299,7 +306,7 @@ namespace tar{
 				);
 			}
 
-			auto const header = impl::tar::make_posix_header(filename, size);
+			auto const header = impl::tar::make_posix_header(filename, size, mtime);
 
 			std::size_t end_record_bytes = (512 - (size % 512)) % 512;
 			std::vector< char > buffer(end_record_bytes);
@@ -486,9 +493,10 @@ namespace tar{
 					expected_file_size_ = 0;
 				}
 			}
+			std::chrono::system_clock::time_point mtime = Fs::mtime(filename_);
 			actual_file_size_ = 0;
 			padding_bytes_ = (512 - (expected_file_size_ % 512)) % 512;
-			auto const header = impl::tar::make_posix_header(filename_, expected_file_size_);
+			auto const header = impl::tar::make_posix_header(filename_, expected_file_size_, mtime);
 			assert(buffer_.size() >= header.size());
 			std::copy(header.data(), header.data() + header.size(), buffer_.data());
 
